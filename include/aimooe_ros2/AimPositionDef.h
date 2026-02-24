@@ -2,9 +2,13 @@
 #pragma once
 
 #ifdef __cplusplus
-#define DLLExport  extern "C" __declspec(dllexport)
+    #if defined(_WIN32)
+        #define DLLExport  extern "C" __declspec(dllexport)
+    #else
+        #define DLLExport  extern "C" __attribute__((visibility("default")))
+    #endif
 #else
-#define DLLExport  extern "C"
+    #define DLLExport  extern "C"
 #endif
 
 #include <list>
@@ -94,7 +98,7 @@ extern "C" {
 								*	Colour camera autofocuses when it loses focus */
 		SC_AF_CONTINUOUSLY_OFF,	/**< Continuous autofocus off for intermediate colour cameras (default off)
 								*	Turning off the colour camera will no longer perform continuous autofocusing*/
-		SC_AF_SINGLE,			/**< Intermediate colour camera focuses automatically in a single pass£¬
+		SC_AF_SINGLE,			/**< Intermediate colour camera focuses automatically in a single passï¿½ï¿½
 								*	When the command is given, the intermediate colour camera will perform a single autofocus
 								*	(Tips: In the colour image display interface of the touchscreen display,
 								*	clicking on a colour image also triggers the colour camera to perform a single autofocus. */
@@ -246,8 +250,8 @@ extern "C" {
 	*/
 	struct T_AimPosStatusInfo
 	{
-		float Tcpu;			/**< CPU temperature (-128¡æ~127¡æ), to ensure that the CPU temperature is less than 75¡æ.*/
-		float Tpcb;			/**< Main board temperature (-128¡ãC~127¡ãC), when the main board temperature is greater than 50¡ãC,
+		float Tcpu;			/**< CPU temperature (-128ï¿½ï¿½~127ï¿½ï¿½), to ensure that the CPU temperature is less than 75ï¿½ï¿½.*/
+		float Tpcb;			/**< Main board temperature (-128ï¿½ï¿½C~127ï¿½ï¿½C), when the main board temperature is greater than 50ï¿½ï¿½C,
 							*	the instrument will sound two alarms.*/
 		UCHAR LeftCamFps;	/**< Left camera live frame rate (fps)*/
 		UCHAR RightCamFps;	/**< Right camera live frame rate (fps)*/
@@ -282,7 +286,7 @@ extern "C" {
 		*	Each marker point occupies 3 lengths and the order of coordinates is X->Y->Z;*/					
 		double MarkerCoordinate[PtMaxNUM * 3];
 
-		/**Phantom point warning array: make value=PhantomMarkerWarning[i]£¬
+		/**Phantom point warning array: make value=PhantomMarkerWarning[i]ï¿½ï¿½
 		* When value > 0, it means that the ith point is likely to be a phantom point
 		* The value value indicates the phantom point subgroup group number to which the point belongs.*/
 		int PhantomMarkerWarning[PtMaxNUM];
