@@ -64,8 +64,7 @@ bool AimooeTrackerNode::initialize_tracker()
         return false;
     }
 
-    // Tell the API we only want tracking INFO, not heavy image data for this timer loop
-    tracker_->set_acquired_data(aimooe_core::AcquiredDataType::INFO);
+    tracker_->set_acquired_data(aimooe_core::AcquiredDataType::NONE);
 
     // Dynamically locate the tools folder inside the ROS 2 install space
     std::string package_share_dir;
