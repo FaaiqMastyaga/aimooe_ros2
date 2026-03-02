@@ -19,8 +19,8 @@ namespace aimooe_core
 {
 
 enum class ConnectionInterface {
-	ETHERNET = 0,
-	USB = 1,
+	USB = 0,
+	ETHERNET = 1,
 	WIFI = 2
 };
 
