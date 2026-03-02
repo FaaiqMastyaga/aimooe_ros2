@@ -81,6 +81,13 @@ ReturnCode AimooeTracker::connect(std::optional<ConnectionInterface> conn_interf
         set_connection_interface(conn_interface.value());
     }
 
+    if (handle_ == nullptr) {
+        Aim_API_Initial(handle_);
+        if (handle_ == nullptr) {
+            return ReturnCode::INIT_FAILED;
+        }
+    }
+
     E_Interface connection_interface = _to_aim_connection_interface(conn_interface_);
     T_AIMPOS_DATAPARA pos_data = {};
     E_ReturnValue aim_result = Aim_ConnectDevice(
