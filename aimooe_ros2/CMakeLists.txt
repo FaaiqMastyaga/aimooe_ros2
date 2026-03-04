@@ -12,6 +12,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(aimooe_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
 add_executable(aimooe_tracker_node 
@@ -30,6 +31,7 @@ ament_target_dependencies(aimooe_tracker_node
   tf2
   tf2_ros
   std_srvs
+  aimooe_msgs
   ament_index_cpp
 )
 

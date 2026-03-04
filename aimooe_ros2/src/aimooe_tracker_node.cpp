@@ -27,6 +27,14 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     // --- Initialize Server ---
     srv_connect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/connect", std::bind(&AimooeTrackerNode::handle_connect, this, std::placeholders::_1, std::placeholders::_2));
     srv_disconnect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/disconnect", std::bind(&AimooeTrackerNode::handle_disconnect, this, std::placeholders::_1, std::placeholders::_2));
+    srv_start_tool_create_ = this->create_service<aimooe_msgs::srv::ToolCreation>("aimooe/start_tool_create", std::bind(&AimooeTrackerNode::handle_start_tool_create, this, std::placeholders::_1, std::placeholders::_2));
+    srv_cancel_tool_create_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_tool_create", std::bind(&AimooeTrackerNode::handle_cancel_tool_create, this, std::placeholders::_1, std::placeholders::_2));
+    srv_start_self_calib_ = this->create_service<aimooe_msgs::srv::SelfCalibration>("aimooe/start_self_calib", std::bind(&AimooeTrackerNode::handle_start_self_calib, this, std::placeholders::_1, std::placeholders::_2));
+    srv_cancel_self_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_self_calib", std::bind(&AimooeTrackerNode::handle_cancel_self_calib, this, std::placeholders::_1, std::placeholders::_2));
+    srv_start_tip_calib_ = this->create_service<aimooe_msgs::srv::TipCalibration>("aimooe/start_tip_calib", std::bind(&AimooeTrackerNode::handle_start_tip_calib, this, std::placeholders::_1, std::placeholders::_2));
+    srv_cancel_tip_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_self_calib", std::bind(&AimooeTrackerNode::handle_cancel_self_calib, this, std::placeholders::_1, std::placeholders::_2));
+    srv_start_pivot_calib_ = this->create_service<aimooe_msgs::srv::TipPivot>("aimooe/start_pivot_calib", std::bind(&AimooeTrackerNode::handle_start_pivot_calib, this, std::placeholders::_1, std::placeholders::_2));
+    srv_cancel_pivot_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_pivot_calib", std::bind(&AimooeTrackerNode::handle_cancel_pivot_calib, this, std::placeholders::_1, std::placeholders::_2));
 
     // --- Initialize Tracker ---
     tracker_ = std::make_unique<aimooe_core::AimooeTracker>();
@@ -142,6 +150,18 @@ void AimooeTrackerNode::timer_callback()
             }
             break;
         }
+        case SystemState::TOOL_CREATING: {
+            break;
+        }
+        case SystemState::SELF_CALIBRATING: {
+            break;
+        }
+        case SystemState::TIP_CALIBRATING: {
+            break;
+        }
+        case SystemState::PIVOT_CALIBRATING: {
+            break;
+        }
     }
 }
 
@@ -169,6 +189,46 @@ void AimooeTrackerNode::handle_disconnect(const std::shared_ptr<std_srvs::srv::T
     RCLCPP_INFO(this->get_logger(), "Camera disconnected via service. Node is IDLE.");
     response->success = true;
     response->message = "Camera disconnected successfully.";
+}
+
+void AimooeTrackerNode::handle_start_tool_create(const std::shared_ptr<aimooe_msgs::srv::ToolCreation::Request> request, std::shared_ptr<aimooe_msgs::srv::ToolCreation::Response> response)
+{
+    current_state_ = SystemState::TOOL_CREATING;
+}
+
+void AimooeTrackerNode::handle_cancel_tool_create(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+
+}
+
+void AimooeTrackerNode::handle_start_self_calib(const std::shared_ptr<aimooe_msgs::srv::SelfCalibration::Request> request, std::shared_ptr<aimooe_msgs::srv::SelfCalibration::Response> response)
+{
+    current_state_ = SystemState::SELF_CALIBRATING;
+}
+
+void AimooeTrackerNode::handle_cancel_self_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+    
+}
+
+void AimooeTrackerNode::handle_start_tip_calib(const std::shared_ptr<aimooe_msgs::srv::TipCalibration::Request> request, std::shared_ptr<aimooe_msgs::srv::TipCalibration::Response> response)
+{
+    current_state_ = SystemState::TIP_CALIBRATING;
+}
+
+void AimooeTrackerNode::handle_cancel_tip_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+    
+}
+
+void AimooeTrackerNode::handle_start_pivot_calib(const std::shared_ptr<aimooe_msgs::srv::TipPivot::Request> request, std::shared_ptr<aimooe_msgs::srv::TipPivot::Response> response)
+{
+    current_state_ = SystemState::PIVOT_CALIBRATING;
+}
+
+void AimooeTrackerNode::handle_cancel_pivot_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+    
 }
 
 } // namespace aimooe_ros2
