@@ -39,7 +39,7 @@ install(TARGETS aimooe_tracker_node
 )
 
 # Install the tools and meshes directories
-install(DIRECTORY tools meshes launch
+install(DIRECTORY tools meshes
   DESTINATION share/${PROJECT_NAME}
 )
 
