@@ -6,16 +6,21 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <std_srvs/srv/trigger.hpp>
 
+// Custom Messages
 #include "aimooe_msgs/srv/tool_creation.hpp"
 #include "aimooe_msgs/srv/self_calibration.hpp"
 #include "aimooe_msgs/srv/tip_calibration.hpp"
 #include "aimooe_msgs/srv/tip_pivot.hpp"
 
+#include "aimooe_core/aimooe_tracker.hpp"
+
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "aimooe_core/aimooe_tracker.hpp"
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 namespace aimooe_ros2
 {
@@ -37,8 +42,10 @@ public:
     ~AimooeTrackerNode() override;
 
 private:
-    void timer_callback();
     bool initialize_tracker();
+
+    // High Speed Loop
+    void tracking_loop();
 
     // Service Callbacks
     void handle_connect(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response);
@@ -56,16 +63,23 @@ private:
     void handle_start_pivot_calib(const std::shared_ptr<aimooe_msgs::srv::TipPivot::Request> request, std::shared_ptr<aimooe_msgs::srv::TipPivot::Response> response);
     void handle_cancel_pivot_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
+    // Core Components
+    std::unique_ptr<aimooe_core::AimooeTracker> tracker_;
+    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    
+    // Parameters
+    std::string tracking_frame_;
+    std::vector<std::string> tools_to_track_;
+    int min_match_points_;
+
     // State Variables
-    SystemState current_state_;
     rclcpp::Time last_reconnect_time_;
 
-    // Hardware Wrapper
-    std::unique_ptr<aimooe_core::AimooeTracker> tracker_;
-    
-    // ROS 2 Inrastructure
-    rclcpp::TimerBase::SharedPtr tracking_timer_;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    // Multithreading Variables
+    std::atomic<SystemState> current_state_{SystemState::IDLE};
+    std::atomic<bool> running_{true};   // Used to safely stop the thread on shutdown
+    std::mutex api_mutex_;
+    std::thread tracking_thread_;
 
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_connect_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_disconnect_;
@@ -81,11 +95,6 @@ private:
 
     rclcpp::Service<aimooe_msgs::srv::TipPivot>::SharedPtr srv_start_pivot_calib_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_cancel_pivot_calib_;
-
-    // Parameters
-    std::string tracking_frame_;
-    std::vector<std::string> tools_to_track_;
-    int min_match_points_;
 };
 
 } // namespace aimooe_ros2
