@@ -11,28 +11,33 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
 {
     // --- Declare Parameters ---
     this->declare_parameter<std::string>("tracking_frame", "aimooe_camera_link");
-    this->declare_parameter<std::vector<std::string>>("tools_to_track", {"tool", "cal", "drb"});
+    this->declare_parameter<std::vector<std::string>>("tools_to_track", {"tool", "cal", "drb", "ict"});
     this->declare_parameter<int>("min_match_points", 3);
-    this->declare_parameter<double>("polling_rate_hz", 300.0);
 
     // --- Get Parameters ---
     tracking_frame_ = this->get_parameter("tracking_frame").as_string();
     tools_to_track_ = this->get_parameter("tools_to_track").as_string_array();
     min_match_points_ = this->get_parameter("min_match_points").as_int();
-    double polling_rate_hz = this->get_parameter("polling_rate_hz").as_double();
 
     // --- Initialize Broadcaster ---
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-    // --- Initialize Server ---
+    // --- Initialize Publisher ---
+    tool_info_pub_ = this->create_publisher<aimooe_msgs::msg::ToolArray>("/aimooe/tool_info", 10);
+
+    // --- Initialize Services ---
     srv_connect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/connect", std::bind(&AimooeTrackerNode::handle_connect, this, std::placeholders::_1, std::placeholders::_2));
     srv_disconnect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/disconnect", std::bind(&AimooeTrackerNode::handle_disconnect, this, std::placeholders::_1, std::placeholders::_2));
+
     srv_start_tool_create_ = this->create_service<aimooe_msgs::srv::ToolCreation>("aimooe/start_tool_create", std::bind(&AimooeTrackerNode::handle_start_tool_create, this, std::placeholders::_1, std::placeholders::_2));
     srv_cancel_tool_create_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_tool_create", std::bind(&AimooeTrackerNode::handle_cancel_tool_create, this, std::placeholders::_1, std::placeholders::_2));
+
     srv_start_self_calib_ = this->create_service<aimooe_msgs::srv::SelfCalibration>("aimooe/start_self_calib", std::bind(&AimooeTrackerNode::handle_start_self_calib, this, std::placeholders::_1, std::placeholders::_2));
     srv_cancel_self_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_self_calib", std::bind(&AimooeTrackerNode::handle_cancel_self_calib, this, std::placeholders::_1, std::placeholders::_2));
+
     srv_start_tip_calib_ = this->create_service<aimooe_msgs::srv::TipCalibration>("aimooe/start_tip_calib", std::bind(&AimooeTrackerNode::handle_start_tip_calib, this, std::placeholders::_1, std::placeholders::_2));
     srv_cancel_tip_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_tip_calib", std::bind(&AimooeTrackerNode::handle_cancel_tip_calib, this, std::placeholders::_1, std::placeholders::_2));
+
     srv_start_pivot_calib_ = this->create_service<aimooe_msgs::srv::TipPivot>("aimooe/start_pivot_calib", std::bind(&AimooeTrackerNode::handle_start_pivot_calib, this, std::placeholders::_1, std::placeholders::_2));
     srv_cancel_pivot_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_pivot_calib", std::bind(&AimooeTrackerNode::handle_cancel_pivot_calib, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -40,23 +45,26 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     tracker_ = std::make_unique<aimooe_core::AimooeTracker>();
     if (!initialize_tracker()) {
         RCLCPP_ERROR(this->get_logger(), "Failed to initialize Aimooe Tracker. Shutting down node.");
-        rclcpp::shutdown();
-        return;
     }
-    current_state_ = SystemState::TRACKING;
+    else {
+        current_state_.store(SystemState::TRACKING);
+    }
 
-    // --- Start Polling Timer ---
-    auto timer_period = std::chrono::duration<double>(1.0 / polling_rate_hz);
-    tracking_timer_ = this->create_wall_timer(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(timer_period),
-        std::bind(&AimooeTrackerNode::timer_callback, this)
-    );
+    // --- Start Dedicated Hardware Thread ---
+    running_.store(true);
+    tracking_thread_ = std::thread(&AimooeTrackerNode::tracking_loop, this);
 
-    RCLCPP_INFO(this->get_logger(), "Aimooe Tracker Node initialized. Publishing TF at %.1f Hz", polling_rate_hz);
+    RCLCPP_INFO(this->get_logger(), "Aimooe Tracker Node initialized. Hardware polling loop running.");
 }
 
 AimooeTrackerNode::~AimooeTrackerNode()
 {
+    // Safely shutdown the thread before destroying the tracker
+    running_.store(false);
+    if (tracking_thread_.joinable()) {
+        tracking_thread_.join();
+    }
+
     if (tracker_) {
         tracker_->disconnect();
     }
@@ -64,7 +72,7 @@ AimooeTrackerNode::~AimooeTrackerNode()
 
 bool AimooeTrackerNode::initialize_tracker()
 {
-    RCLCPP_INFO(this->get_logger(), "Connecting to Aimooe device via Ethernet...");
+    RCLCPP_INFO(this->get_logger(), "Connecting to Aimooe device...");
     auto connect_code = tracker_->connect(aimooe_core::ConnectionInterface::ETHERNET);
     
     if (connect_code != aimooe_core::ReturnCode::OK) {
@@ -94,133 +102,203 @@ bool AimooeTrackerNode::initialize_tracker()
     return true;
 }
 
-void AimooeTrackerNode::timer_callback()
-{
-    switch (current_state_) {
-        case SystemState::IDLE:
-            break;
-        case SystemState::CONNECTING: {
-            if ((this->now() - last_reconnect_time_).seconds() > 2.0) {
-                last_reconnect_time_ = this->now();
-                if (initialize_tracker()) {
-                    RCLCPP_INFO(this->get_logger(), "Camera Connected! Broadcasting TF...");
-                    current_state_ = SystemState::TRACKING;
+// =========================================================================================
+// High-Speed Hardware Thread
+// =========================================================================================
+void AimooeTrackerNode::tracking_loop() {
+    // Pre-allocate the TF message to avoid heap allocation
+    geometry_msgs::msg::TransformStamped t;
+    
+    while (rclcpp::ok() && running_.load()) {
+
+        {
+            // Lock the camera API. Services must wait until this unblocks.
+            std::lock_guard<std::mutex> lock(api_mutex_);
+
+            switch (current_state_.load()) {
+                case SystemState::IDLE:
+                    break;
+                
+                case SystemState::CONNECTING: {
+                    if ((this->now() - last_reconnect_time_).seconds() > 2.0) {
+                        last_reconnect_time_ = this->now();
+                        if (initialize_tracker()) {
+                            RCLCPP_INFO(this->get_logger(), "Camera Reconnected!");
+                            current_state_.store(SystemState::TRACKING);
+                        }
+                        else {
+                            RCLCPP_WARN(this->get_logger(), "Connection failed. Retrying in 2 seconds...");
+                        }
+                    }
+                    break;
                 }
-                else {
-                    RCLCPP_WARN(this->get_logger(), "Connection failed. Retrying in 2 seconds...");
+
+                case SystemState::TRACKING: {
+                    auto [code, valid_tools] = tracker_->find_valid_tools(tools_to_track_, min_match_points_);
+
+                    if (code != aimooe_core::ReturnCode::OK) {
+                        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Error fetching tracker data. Code: %d", static_cast<int>(code));
+                        break;
+                    }
+
+                    rclcpp::Time now = this->get_clock()->now();
+                    
+                    // Prepare custom message array
+                    aimooe_msgs::msg::ToolArray tool_array_msg;
+                    tool_array_msg.header.stamp = now;
+                    tool_array_msg.header.frame_id = tracking_frame_;
+
+                    for (const auto& tool : valid_tools) {
+                        // Broadcast TF Frame
+                        t.header.stamp = now;
+                        t.header.frame_id = tracking_frame_;
+                        t.child_frame_id = tool.tool_name;
+                        t.transform.translation.x = tool.translation_vector[0] / 1000.0;
+                        t.transform.translation.y = tool.translation_vector[1] / 1000.0;
+                        t.transform.translation.z = tool.translation_vector[2] / 1000.0;
+                        t.transform.rotation.x = tool.quaternion[0];
+                        t.transform.rotation.y = tool.quaternion[1];
+                        t.transform.rotation.z = tool.quaternion[2];
+                        t.transform.rotation.w = tool.quaternion[3];
+                        tf_broadcaster_->sendTransform(t);
+
+                        // --- Pack ToolInfo data ---
+                        aimooe_msgs::msg::Tool tool_msg;
+                        tool_msg.tool_name = tool.tool_name;
+                        tool_msg.tool_type = static_cast<int16_t>(tool.tool_type);
+                        tool_msg.is_valid = tool.is_valid;
+                        tool_msg.mean_abs_error = tool.mean_abs_error;
+                        tool_msg.rms_error = tool.rms_error;
+
+                        // Rotation Vector (Geometry Vector3)
+                        tool_msg.rotation_vector.x = tool.rotation_vector[0];
+                        tool_msg.rotation_vector.y = tool.rotation_vector[1];
+                        tool_msg.rotation_vector.z = tool.rotation_vector[2];
+
+                        // Quaternion (Geometry Quaternion)
+                        tool_msg.quaternion.x = tool.quaternion[0];
+                        tool_msg.quaternion.y = tool.quaternion[1];
+                        tool_msg.quaternion.z = tool.quaternion[2];
+                        tool_msg.quaternion.w = tool.quaternion[3];
+
+                        // Translation Vector (Geometry Vector3)
+                        tool_msg.translation_vector.x = tool.translation_vector[0];
+                        tool_msg.translation_vector.y = tool.translation_vector[1];
+                        tool_msg.translation_vector.z = tool.translation_vector[2];
+
+                        // Origin Coordinates (Geometry Point32)
+                        tool_msg.origin_coordinates.x = tool.origin_coordinates[0];
+                        tool_msg.origin_coordinates.y = tool.origin_coordinates[1];
+                        tool_msg.origin_coordinates.z = tool.origin_coordinates[2];
+
+                        // Rotation Matrix (Flattened 3x3 Matrix)
+                        for (int i = 0; i < 3; i++) {
+                            for (int j = 0; j < 3; j++) {
+                                tool_msg.rotation_matrix[i*3 + j] = tool.rotation_matrix[i][j];
+                            }
+                        }
+
+                        // Marker Points
+                        for (size_t i = 0; i < tool.marker_points.size(); i += 3) {
+                            if (i + 2 < tool.marker_points.size()) {
+                                geometry_msgs::msg::Point32 pt;
+                                pt.x = tool.marker_points[i];
+                                pt.y = tool.marker_points[i+1];
+                                pt.z = tool.marker_points[i+2];
+                                tool_msg.marker_points.push_back(pt);
+                            }
+                        }
+
+                        // Add to array
+                        tool_array_msg.tools.push_back(tool_msg);
+                    }
+                    tool_info_pub_->publish(tool_array_msg);
+                    break;
                 }
-            }
-            break;
-        }
-        case SystemState::TRACKING: {
-            // Fetch tracked data from the pure C++ core library
-            auto [code, valid_tools] = tracker_->find_valid_tools(tools_to_track_, min_match_points_);
-        
-            if (code != aimooe_core::ReturnCode::OK) {
-                // If data is just stale, skip this frame. If it's a real error, log it.
-                if (code != aimooe_core::ReturnCode::STALE_DATA) {
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
-                        "Error fetching tracker data. Code: %d", static_cast<int>(code));
+
+                case SystemState::TOOL_CREATING: {
+                    auto [code, progress] = tracker_->tool_create_process();
+                    if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
+                        tracker_->disconnect();
+                        current_state_ = SystemState::CONNECTING;
+                    }
+                    if (code == aimooe_core::ReturnCode::OK) {
+                        auto msg = std_msgs::msg::String();
+
+                        if (progress.finished) {
+                            RCLCPP_INFO(this->get_logger(), "Tool Creation Finished. Error: %.4f", progress.error);
+                            tracker_->tool_create_finish(true);
+
+                            current_state_ = SystemState::TRACKING;
+                        }
+                    }
+                    break;
                 }
-                return;
-            }
-        
-            // Broadcast each detected tool to the TF2 tree
-            rclcpp::Time now = this->get_clock()->now();
-            for (const auto& tool : valid_tools) {
-                geometry_msgs::msg::TransformStamped t;
-        
-                t.header.stamp = now;
-                t.header.frame_id = tracking_frame_;
-                t.child_frame_id = tool.tool_name;
-        
-                // Translation (Note: Ensure API units match ROS 2 standard, which is usually meters. 
-                // If Aimooe returns millimeters, divide by 1000.0)
-                t.transform.translation.x = tool.translation_vector[0] / 1000.0; 
-                t.transform.translation.y = tool.translation_vector[1] / 1000.0;
-                t.transform.translation.z = tool.translation_vector[2] / 1000.0;
-        
-                // Rotation (Quaternions)
-                t.transform.rotation.x = tool.quaternion[0];
-                t.transform.rotation.y = tool.quaternion[1];
-                t.transform.rotation.z = tool.quaternion[2];
-                t.transform.rotation.w = tool.quaternion[3];
-        
-                tf_broadcaster_->sendTransform(t);
-            }
-            break;
-        }
-        case SystemState::TOOL_CREATING: {
-            auto [code, progress] = tracker_->tool_create_process();
-            if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
-                tracker_->disconnect();
-                current_state_ = SystemState::CONNECTING;
-            }
-            if (code == aimooe_core::ReturnCode::OK) {
-                auto msg = std_msgs::msg::String();
+                
+                case SystemState::SELF_CALIBRATING: {
+                    auto [code, progress] = tracker_->tool_self_calibration_process();
+                    if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
+                        tracker_->disconnect();
+                        current_state_ = SystemState::CONNECTING;
+                    }
+                    if (code == aimooe_core::ReturnCode::OK) {
+                        auto msg = std_msgs::msg::String();
 
-                if (progress.finished) {
-                    RCLCPP_INFO(this->get_logger(), "Tool Creation Finished. Error: %.4f", progress.error);
-                    tracker_->tool_create_finish(true);
+                        if (progress.finished) {
+                            RCLCPP_INFO(this->get_logger(), "Self Calibration Finished. Match Error: %.4f", progress.match_error);
+                            tracker_->tool_self_calibration_finish(true);
 
-                    current_state_ = SystemState::TRACKING;
+                            current_state_ = SystemState::TRACKING;
+                        }
+                    }
+                    break;                
                 }
-            }
-            break;
-        }
-        case SystemState::SELF_CALIBRATING: {
-            auto [code, progress] = tracker_->tool_self_calibration_process();
-            if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
-                tracker_->disconnect();
-                current_state_ = SystemState::CONNECTING;
-            }
-            if (code == aimooe_core::ReturnCode::OK) {
-                auto msg = std_msgs::msg::String();
+                
+                case SystemState::TIP_CALIBRATING: {
+                    auto [code, progress] = tracker_->tool_tip_calibration_process();
+                    if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
+                        tracker_->disconnect();
+                        current_state_ = SystemState::CONNECTING;
+                    }
+                    if (code == aimooe_core::ReturnCode::OK) {
+                        auto msg = std_msgs::msg::String();
 
-                if (progress.finished) {
-                    RCLCPP_INFO(this->get_logger(), "Self Calibration Finished. Match Error: %.4f", progress.match_error);
-                    tracker_->tool_self_calibration_finish(true);
+                        if (progress.finished) {
+                            RCLCPP_INFO(this->get_logger(), "Tip Calibration Finished. RMS Error: %.4f", progress.rms_error);
+                            tracker_->tool_tip_calibration_finish(true);
 
-                    current_state_ = SystemState::TRACKING;
+                            current_state_ = SystemState::TRACKING;
+                        }
+                    }
+                    break;
                 }
-            }
-            break;        }
-        case SystemState::TIP_CALIBRATING: {
-            auto [code, progress] = tracker_->tool_tip_calibration_process();
-            if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
-                tracker_->disconnect();
-                current_state_ = SystemState::CONNECTING;
-            }
-            if (code == aimooe_core::ReturnCode::OK) {
-                auto msg = std_msgs::msg::String();
+                
+                case SystemState::PIVOT_CALIBRATING: {
+                    auto [code, progress] = tracker_->tool_tip_pivot_process();
+                    if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
+                        tracker_->disconnect();
+                        current_state_ = SystemState::CONNECTING;
+                    }
+                    if (code == aimooe_core::ReturnCode::OK) {
+                        auto msg = std_msgs::msg::String();
 
-                if (progress.finished) {
-                    RCLCPP_INFO(this->get_logger(), "Tip Calibration Finished. RMS Error: %.4f", progress.rms_error);
-                    tracker_->tool_tip_calibration_finish(true);
+                        if (progress.finished) {
+                            RCLCPP_INFO(this->get_logger(), "Tip Calibration Finished. Mean Error: %.4f", progress.mean_error);
+                            tracker_->tool_tip_pivot_finish(true);
 
-                    current_state_ = SystemState::TRACKING;
-                }
+                            current_state_ = SystemState::TRACKING;
+                        }
+                    }
+                    break;
+                } 
+                
+                default:
+                    break;
             }
-            break;
-        }
-        case SystemState::PIVOT_CALIBRATING: {
-            auto [code, progress] = tracker_->tool_tip_pivot_process();
-            if (code == aimooe_core::ReturnCode::NOT_CONNECTED || code == aimooe_core::ReturnCode::READ_FAULT) {
-                tracker_->disconnect();
-                current_state_ = SystemState::CONNECTING;
-            }
-            if (code == aimooe_core::ReturnCode::OK) {
-                auto msg = std_msgs::msg::String();
+         } // <--- MUTEX IS UNLOCKED HERE. Service callbacks can now execute!
 
-                if (progress.finished) {
-                    RCLCPP_INFO(this->get_logger(), "Tip Calibration Finished. Mean Error: %.4f", progress.mean_error);
-                    tracker_->tool_tip_pivot_finish(true);
-
-                    current_state_ = SystemState::TRACKING;
-                }
-            }
-            break;
-        }
+        // Sleep for 1 ms to prevent 100% CPU usage and allow services to grab the lock
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
@@ -230,21 +308,52 @@ void AimooeTrackerNode::timer_callback()
 
 void AimooeTrackerNode::handle_connect(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-    if (current_state_ == SystemState::TRACKING) {
+    // Quick check without locking
+    if (current_state_.load() == SystemState::TRACKING) {
         response->success = false;
         response->message = "Already connected and tracking.";
         return;
     }
-    current_state_ = SystemState::CONNECTING;
-    last_reconnect_time_ = this->now() - rclcpp::Duration(5, 0);
-    response->success = true;
-    response->message = "Connection sequence started.";
+
+    bool connection_successful = false;
+
+    {
+        // LOCK THE CAMERA API!
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        
+        // Try to connect immediately so we can give Slicer an honest answer
+        connection_successful = initialize_tracker();
+        
+        if (connection_successful) {
+            // Jump straight to tracking!
+            current_state_.store(SystemState::TRACKING);
+        } else {
+            // If it fails, put the state machine into CONNECTING so the 
+            // tracking_loop() takes over and automatically retries every 2 seconds.
+            current_state_.store(SystemState::CONNECTING);
+            last_reconnect_time_ = this->now(); 
+        }
+    } // UNLOCK!
+
+    // Reply
+    if (connection_successful) {
+        RCLCPP_INFO(this->get_logger(), "Camera connected via service.");
+        response->success = true;
+        response->message = "Connected successfully!";
+    } else {
+        RCLCPP_WARN(this->get_logger(), "Manual connect failed. Background loop will keep trying.");
+        response->success = false; // Note: We return false so the UI knows the camera isn't ready yet
+        response->message = "Connection failed. Retrying in background...";
+    }
 }
 
 void AimooeTrackerNode::handle_disconnect(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-    current_state_ = SystemState::IDLE;
-    tracker_->disconnect();
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);   // LOCK THE CAMERA!
+        tracker_->disconnect();
+        current_state_.store(SystemState::IDLE);
+    }
     RCLCPP_INFO(this->get_logger(), "Camera disconnected via service. Node is IDLE.");
     response->success = true;
     response->message = "Camera disconnected successfully.";
@@ -269,10 +378,30 @@ void AimooeTrackerNode::handle_start_tool_create(const std::shared_ptr<aimooe_ms
     response->message = "Tool creation started";
     RCLCPP_INFO(this->get_logger(), "Initialized tool creation: %s (%d markers)", tool_name.c_str(), (int)marker_count);
     RCLCPP_INFO(this->get_logger(), "Hold tool steady in view");
+
+    int marker_count = request->marker_count;
+    std::string tool_name = request->tool_name;
+    aimooe_core::ReturnCode code = tracker_->tool_create_init(marker_count, tool_name);
+    
+    if (code != aimooe_core::ReturnCode::OK) {
+        current_state_ = SystemState::TRACKING;
+        response->success = false;
+        response->message = "Failed to initialize tool creation";
+        RCLCPP_ERROR(this->get_logger(), "Failed to initialize tool creation: %d", (int)code);
+        return;
+    }
+    response->success = true;
+    response->message = "Tool creation started";
+    RCLCPP_INFO(this->get_logger(), "Initialized tool creation: %s (%d markers)", tool_name.c_str(), (int)marker_count);
+    RCLCPP_INFO(this->get_logger(), "Hold tool steady in view");
 }
 
 void AimooeTrackerNode::handle_cancel_tool_create(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
+    tracker_->tool_create_finish(false);
+    current_state_ = SystemState::TRACKING;
+    response->success = true;
+    response->message = "Tool creation canceled";
     tracker_->tool_create_finish(false);
     current_state_ = SystemState::TRACKING;
     response->success = true;
@@ -297,10 +426,29 @@ void AimooeTrackerNode::handle_start_self_calib(const std::shared_ptr<aimooe_msg
     response->message = "Self calibration started";
     RCLCPP_INFO(this->get_logger(), "Initialized self calibration: %s (%d markers)", tool_name.c_str(), (int)marker_count);
     RCLCPP_INFO(this->get_logger(), "Hold tool steady in view");
+
+    std::string tool_name = request->tool_name;
+    auto [code, marker_count] = tracker_->tool_self_calibration_init(tool_name);
+    
+    if (code != aimooe_core::ReturnCode::OK) {
+        current_state_ = SystemState::TRACKING;
+        response->success = false;
+        response->message = "Failed to initialize self calibration";
+        RCLCPP_ERROR(this->get_logger(), "Failed to initialize tool self calibration: %d", (int)code);
+        return;
+    }
+    response->success = true;
+    response->message = "Self calibration started";
+    RCLCPP_INFO(this->get_logger(), "Initialized self calibration: %s (%d markers)", tool_name.c_str(), (int)marker_count);
+    RCLCPP_INFO(this->get_logger(), "Hold tool steady in view");
 }
 
 void AimooeTrackerNode::handle_cancel_self_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
+    tracker_->tool_self_calibration_finish(false);
+    current_state_ = SystemState::TRACKING;
+    response->success = true;
+    response->message = "Self calibration canceled";}
     tracker_->tool_self_calibration_finish(false);
     current_state_ = SystemState::TRACKING;
     response->success = true;
@@ -325,10 +473,30 @@ void AimooeTrackerNode::handle_start_tip_calib(const std::shared_ptr<aimooe_msgs
     response->message = "Tip calibration started";
     RCLCPP_INFO(this->get_logger(), "Initialized tool tip calibration: board=%s, tool=%s", calibration_board_name.c_str(), tool_name.c_str());
     RCLCPP_INFO(this->get_logger(), "Move tool and board in view");
+
+    std::string calibration_board_name = request->calibration_board_name;
+    std::string tool_name = request->tool_name;
+    aimooe_core::ReturnCode code = tracker_->tool_tip_calibration_init(calibration_board_name, tool_name);
+    
+    if (code != aimooe_core::ReturnCode::OK) {
+        current_state_ = SystemState::TRACKING;
+        response->success = false;
+        response->message = "Failed to initialize tip calibration";
+        RCLCPP_ERROR(this->get_logger(), "Failed to initialize tool tip calibration: %d", (int)code);
+        return;
+    }
+    response->success = true;
+    response->message = "Tip calibration started";
+    RCLCPP_INFO(this->get_logger(), "Initialized tool tip calibration: board=%s, tool=%s", calibration_board_name.c_str(), tool_name.c_str());
+    RCLCPP_INFO(this->get_logger(), "Move tool and board in view");
 }
 
 void AimooeTrackerNode::handle_cancel_tip_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
+    tracker_->tool_tip_calibration_finish(false);
+    current_state_ = SystemState::TRACKING;
+    response->success = true;
+    response->message = "Tip calibration canceled";
     tracker_->tool_tip_calibration_finish(false);
     current_state_ = SystemState::TRACKING;
     response->success = true;
@@ -354,10 +522,30 @@ void AimooeTrackerNode::handle_start_pivot_calib(const std::shared_ptr<aimooe_ms
     response->message = "Pivot calibration started";
     RCLCPP_INFO(this->get_logger(), "Initialized pivot calibration: tool=%s", tool_name.c_str());
     RCLCPP_INFO(this->get_logger(), "Rotate tool tip around fixed point");
+
+    std::string tool_name = request->tool_name;
+    bool clear_tip_mid = request->clear_tip_mid;
+    aimooe_core::ReturnCode code = tracker_->tool_tip_pivot_init(tool_name, clear_tip_mid);
+    
+    if (code != aimooe_core::ReturnCode::OK) {
+        current_state_ = SystemState::TRACKING;
+        response->success = false;
+        response->message = "Failed to initialize pivot calibration";
+        RCLCPP_ERROR(this->get_logger(), "Failed to initialize pivot calibration: %d", (int)code);
+        return;
+    }
+    response->success = true;
+    response->message = "Pivot calibration started";
+    RCLCPP_INFO(this->get_logger(), "Initialized pivot calibration: tool=%s", tool_name.c_str());
+    RCLCPP_INFO(this->get_logger(), "Rotate tool tip around fixed point");
 }
 
 void AimooeTrackerNode::handle_cancel_pivot_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
+    tracker_->tool_tip_pivot_finish(false);
+    current_state_ = SystemState::TRACKING;
+    response->success = true;
+    response->message = "Pivot calibration canceled";
     tracker_->tool_tip_pivot_finish(false);
     current_state_ = SystemState::TRACKING;
     response->success = true;
@@ -370,12 +558,18 @@ void AimooeTrackerNode::handle_cancel_pivot_calib(const std::shared_ptr<std_srvs
 int main(int argc, char ** argv)
 {
     rclcpp::init(argc, argv);
+    auto node = std::make_shared<aimooe_ros2::AimooeTrackerNode>();
+
+    // Crucial for allowing Actions/Services to process concurrently
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+
     try {
-        auto node = std::make_shared<aimooe_ros2::AimooeTrackerNode>();
-        rclcpp::spin(node);
+        executor.spin();
     } catch (const std::exception & e) {
-        RCLCPP_FATAL(rclcpp::get_logger("aimooe_tracker_node"), "Node terminated: %s", e.what());
+        RCLCPP_FATAL(node->get_logger(), "Node terminated: %s", e.what());
     }
+    
     rclcpp::shutdown();
     return 0;
 }
