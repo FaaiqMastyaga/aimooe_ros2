@@ -1,0 +1,12 @@
+# --- GOAL ---
+string tool_name
+---
+# --- RESULT ---
+bool success
+string message
+float32 final_match_error
+---
+# --- FEEDBACK ---
+int32 total_marker_count
+int32 valid_calibration_count
+float32 current_match_error

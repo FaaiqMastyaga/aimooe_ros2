@@ -1,0 +1,13 @@
+# --- GOAL ---
+string tool_name
+int32 marker_count
+---
+# --- RESULT ---
+bool success
+string message
+float32 final_error
+---
+# --- FEEDBACK ---
+float32 progress_rate
+float32 current_error
+bool invalid_marker_flag
