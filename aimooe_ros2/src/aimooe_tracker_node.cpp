@@ -45,6 +45,7 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     tracker_ = std::make_unique<aimooe_core::AimooeTracker>();
     if (!initialize_tracker()) {
         RCLCPP_ERROR(this->get_logger(), "Failed to initialize Aimooe Tracker. Shutting down node.");
+        throw std::runtime_error("Hardware initialization failed.");
     }
     else {
         current_state_.store(SystemState::TRACKING);
@@ -66,7 +67,9 @@ AimooeTrackerNode::~AimooeTrackerNode()
     }
 
     if (tracker_) {
+        std::lock_guard<std::mutex> lock(api_mutex_);
         tracker_->disconnect();
+        RCLCPP_INFO(this->get_logger(), "Camera safely disconnected. Goodbye!");
     }
 }
 
@@ -137,7 +140,9 @@ void AimooeTrackerNode::tracking_loop() {
                     auto [code, valid_tools] = tracker_->find_valid_tools(tools_to_track_, min_match_points_);
 
                     if (code != aimooe_core::ReturnCode::OK) {
-                        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Error fetching tracker data. Code: %d", static_cast<int>(code));
+                        RCLCPP_WARN(this->get_logger(), "Tracker error. Attempting to reconnect...");
+                        current_state_.store(SystemState::CONNECTING);
+                        last_reconnect_time_ = this->now();
                         break;
                     }
 
@@ -357,6 +362,7 @@ int main(int argc, char ** argv)
         RCLCPP_FATAL(node->get_logger(), "Node terminated: %s", e.what());
     }
     
+    node.reset();
     rclcpp::shutdown();
     return 0;
 }
