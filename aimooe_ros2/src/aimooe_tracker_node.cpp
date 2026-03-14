@@ -22,6 +22,9 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     // --- Initialize Broadcaster ---
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
+    // --- Initialize Publisher ---
+    tool_info_pub_ = this->create_publisher<aimooe_msgs::msg::ToolArray>("/aimooe/tool_info", 10);
+
     // --- Initialize Services ---
     srv_connect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/connect", std::bind(&AimooeTrackerNode::handle_connect, this, std::placeholders::_1, std::placeholders::_2));
     srv_disconnect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/disconnect", std::bind(&AimooeTrackerNode::handle_disconnect, this, std::placeholders::_1, std::placeholders::_2));
@@ -139,10 +142,16 @@ void AimooeTrackerNode::tracking_loop() {
                     }
 
                     rclcpp::Time now = this->get_clock()->now();
-                    t.header.stamp = now;
-                    t.header.frame_id = tracking_frame_;
                     
+                    // Prepare custom message array
+                    aimooe_msgs::msg::ToolArray tool_array_msg;
+                    tool_array_msg.header.stamp = now;
+                    tool_array_msg.header.frame_id = tracking_frame_;
+
                     for (const auto& tool : valid_tools) {
+                        // Broadcast TF Frame
+                        t.header.stamp = now;
+                        t.header.frame_id = tracking_frame_;
                         t.child_frame_id = tool.tool_name;
                         t.transform.translation.x = tool.translation_vector[0] / 1000.0;
                         t.transform.translation.y = tool.translation_vector[1] / 1000.0;
@@ -151,9 +160,59 @@ void AimooeTrackerNode::tracking_loop() {
                         t.transform.rotation.y = tool.quaternion[1];
                         t.transform.rotation.z = tool.quaternion[2];
                         t.transform.rotation.w = tool.quaternion[3];
-
                         tf_broadcaster_->sendTransform(t);
+
+                        // --- Pack ToolInfo data ---
+                        aimooe_msgs::msg::Tool tool_msg;
+                        tool_msg.tool_name = tool.tool_name;
+                        tool_msg.tool_type = static_cast<int16_t>(tool.tool_type);
+                        tool_msg.is_valid = tool.is_valid;
+                        tool_msg.mean_abs_error = tool.mean_abs_error;
+                        tool_msg.rms_error = tool.rms_error;
+
+                        // Rotation Vector (Geometry Vector3)
+                        tool_msg.rotation_vector.x = tool.rotation_vector[0];
+                        tool_msg.rotation_vector.y = tool.rotation_vector[1];
+                        tool_msg.rotation_vector.z = tool.rotation_vector[2];
+
+                        // Quaternion (Geometry Quaternion)
+                        tool_msg.quaternion.x = tool.quaternion[0];
+                        tool_msg.quaternion.y = tool.quaternion[1];
+                        tool_msg.quaternion.z = tool.quaternion[2];
+                        tool_msg.quaternion.w = tool.quaternion[3];
+
+                        // Translation Vector (Geometry Vector3)
+                        tool_msg.translation_vector.x = tool.translation_vector[0];
+                        tool_msg.translation_vector.y = tool.translation_vector[1];
+                        tool_msg.translation_vector.z = tool.translation_vector[2];
+
+                        // Origin Coordinates (Geometry Point32)
+                        tool_msg.origin_coordinates.x = tool.origin_coordinates[0];
+                        tool_msg.origin_coordinates.y = tool.origin_coordinates[1];
+                        tool_msg.origin_coordinates.z = tool.origin_coordinates[2];
+
+                        // Rotation Matrix (Flattened 3x3 Matrix)
+                        for (int i = 0; i < 3; i++) {
+                            for (int j = 0; j < 3; j++) {
+                                tool_msg.rotation_matrix[i*3 + j] = tool.rotation_matrix[i][j];
+                            }
+                        }
+
+                        // Marker Points
+                        for (size_t i = 0; i < tool.marker_points.size(); i += 3) {
+                            if (i + 2 < tool.marker_points.size()) {
+                                geometry_msgs::msg::Point32 pt;
+                                pt.x = tool.marker_points[i];
+                                pt.y = tool.marker_points[i+1];
+                                pt.z = tool.marker_points[i+2];
+                                tool_msg.marker_points.push_back(pt);
+                            }
+                        }
+
+                        // Add to array
+                        tool_array_msg.tools.push_back(tool_msg);
                     }
+                    tool_info_pub_->publish(tool_array_msg);
                     break;
                 }
 

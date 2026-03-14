@@ -7,6 +7,10 @@
 #include <std_srvs/srv/trigger.hpp>
 
 // Custom Messages
+#include "aimooe_msgs/msg/tool.hpp"
+#include "aimooe_msgs/msg/tool_array.hpp"
+
+// Custom Services
 #include "aimooe_msgs/srv/tool_creation.hpp"
 #include "aimooe_msgs/srv/self_calibration.hpp"
 #include "aimooe_msgs/srv/tip_calibration.hpp"
@@ -80,6 +84,8 @@ private:
     std::atomic<bool> running_{true};   // Used to safely stop the thread on shutdown
     std::mutex api_mutex_;
     std::thread tracking_thread_;
+
+    rclcpp::Publisher<aimooe_msgs::msg::ToolArray>::SharedPtr tool_info_pub_;
 
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_connect_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_disconnect_;
