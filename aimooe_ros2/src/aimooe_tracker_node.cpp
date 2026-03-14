@@ -235,7 +235,7 @@ void AimooeTrackerNode::tracking_loop() {
                 default:
                     break;
             }
-         } // <--- MUTEX IS UNLOCKED HERE. Service callbacks can now execute!
+        } // <--- MUTEX IS UNLOCKED HERE. Service callbacks can now execute!
 
         // Sleep for 1 ms to prevent 100% CPU usage and allow services to grab the lock
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -301,7 +301,7 @@ void AimooeTrackerNode::handle_disconnect(const std::shared_ptr<std_srvs::srv::T
 
 void AimooeTrackerNode::handle_start_tool_create(const std::shared_ptr<aimooe_msgs::srv::ToolCreation::Request> request, std::shared_ptr<aimooe_msgs::srv::ToolCreation::Response> response)
 {
-    current_state_ = SystemState::TOOL_CREATING;
+
 }
 
 void AimooeTrackerNode::handle_cancel_tool_create(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
@@ -311,27 +311,27 @@ void AimooeTrackerNode::handle_cancel_tool_create(const std::shared_ptr<std_srvs
 
 void AimooeTrackerNode::handle_start_self_calib(const std::shared_ptr<aimooe_msgs::srv::SelfCalibration::Request> request, std::shared_ptr<aimooe_msgs::srv::SelfCalibration::Response> response)
 {
-    current_state_ = SystemState::SELF_CALIBRATING;
+
 }
 
 void AimooeTrackerNode::handle_cancel_self_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-    
+
 }
 
 void AimooeTrackerNode::handle_start_tip_calib(const std::shared_ptr<aimooe_msgs::srv::TipCalibration::Request> request, std::shared_ptr<aimooe_msgs::srv::TipCalibration::Response> response)
 {
-    current_state_ = SystemState::TIP_CALIBRATING;
+
 }
 
 void AimooeTrackerNode::handle_cancel_tip_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-    
+
 }
 
 void AimooeTrackerNode::handle_start_pivot_calib(const std::shared_ptr<aimooe_msgs::srv::TipPivot::Request> request, std::shared_ptr<aimooe_msgs::srv::TipPivot::Response> response)
 {
-    current_state_ = SystemState::PIVOT_CALIBRATING;
+
 }
 
 void AimooeTrackerNode::handle_cancel_pivot_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)

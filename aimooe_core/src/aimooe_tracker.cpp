@@ -52,7 +52,7 @@ auto fetch_hardware_data = [](AimHandle handle, ConnectionInterface interface) -
     int attempts = 0;
     
     while (ret == AIMOOE_NOT_REFLASH && attempts < 5) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         ret = Aim_GetMarkerAndStatusFromHardware(handle, (E_Interface)interface, marker_info, status_info);
         attempts++;
     }
