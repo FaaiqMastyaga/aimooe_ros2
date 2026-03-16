@@ -42,6 +42,27 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     srv_disconnect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/disconnect", std::bind(&AimooeTrackerNode::handle_disconnect, this, std::placeholders::_1, std::placeholders::_2));
 
     // --- Initialize Action Servers ---
+    action_tool_create_ = rclcpp_action::create_server<aimooe_msgs::action::ToolCreation>(
+        this, "aimooe/tool_create",
+        std::bind(&AimooeTrackerNode::handle_tool_create_goal, this, std::placeholders::_1, std::placeholders::_2),
+        std::bind(&AimooeTrackerNode::handle_tool_create_cancel, this, std::placeholders::_1),
+        std::bind(&AimooeTrackerNode::handle_tool_create_accepted, this, std::placeholders::_1)
+    );
+
+    action_self_calib_ = rclcpp_action::create_server<aimooe_msgs::action::SelfCalibration>(
+        this, "aimooe/self_calib",
+        std::bind(&AimooeTrackerNode::handle_self_calib_goal, this, std::placeholders::_1, std::placeholders::_2),
+        std::bind(&AimooeTrackerNode::handle_self_calib_cancel, this, std::placeholders::_1),
+        std::bind(&AimooeTrackerNode::handle_self_calib_accepted, this, std::placeholders::_1)
+    );
+
+    action_tip_calib_ = rclcpp_action::create_server<aimooe_msgs::action::TipCalibration>(
+        this, "aimooe/tip_calib",
+        std::bind(&AimooeTrackerNode::handle_tip_calib_goal, this, std::placeholders::_1, std::placeholders::_2),
+        std::bind(&AimooeTrackerNode::handle_tip_calib_cancel, this, std::placeholders::_1),
+        std::bind(&AimooeTrackerNode::handle_tip_calib_accepted, this, std::placeholders::_1)
+    );
+
     action_tip_pivot_ = rclcpp_action::create_server<aimooe_msgs::action::TipPivot>(
         this,
         "aimooe/tip_pivot",
@@ -297,6 +318,219 @@ void AimooeTrackerNode::handle_disconnect(const std::shared_ptr<std_srvs::srv::T
     RCLCPP_INFO(this->get_logger(), "Camera disconnected via service. Node is IDLE.");
     response->success = true;
     response->message = "Camera disconnected successfully.";
+}
+
+// =========================================================================================
+// Tool Creation Action Callbacks
+// =========================================================================================
+
+rclcpp_action::GoalResponse AimooeTrackerNode::handle_tool_create_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const aimooe_msgs::action::ToolCreation::Goal> goal) 
+{
+    if (current_state_.load() != SystemState::TRACKING) return rclcpp_action::GoalResponse::REJECT;
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse AimooeTrackerNode::handle_tool_create_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::ToolCreation>> goal_handle) 
+{
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void AimooeTrackerNode::handle_tool_create_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::ToolCreation>> goal_handle)
+{
+    std::thread{std::bind(&AimooeTrackerNode::execute_tool_create_action, this, std::placeholders::_1), goal_handle}.detach();
+}
+
+void AimooeTrackerNode::execute_tool_create_action(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::ToolCreation>> goal_handle)
+{
+    const auto goal = goal_handle->get_goal();
+    auto feedback = std::make_shared<aimooe_msgs::action::ToolCreation::Feedback>();
+    auto result = std::make_shared<aimooe_msgs::action::ToolCreation::Result>();
+
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        current_state_.store(SystemState::TOOL_CREATING);
+        if (tracker_->tool_create_init(goal->marker_count, goal->tool_name) != aimooe_core::ReturnCode::OK) {
+            result->success = false; result->message = "Failed to init tool creation.";
+            goal_handle->abort(result); current_state_.store(SystemState::TRACKING); return;
+        }
+    }
+
+    rclcpp::Rate loop_rate(25); bool finished = false;
+    while (rclcpp::ok() && !finished) {
+        if (goal_handle->is_canceling()) {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            tracker_->tool_create_finish(false);
+            result->success = false; result->message = "Canceled.";
+            goal_handle->canceled(result); current_state_.store(SystemState::TRACKING); return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            auto [code, progress] = tracker_->tool_create_process();
+            if (code == aimooe_core::ReturnCode::OK) {
+                feedback->progress_rate = progress.progress_rate;
+                feedback->current_error = progress.error;
+                feedback->invalid_marker_flag = progress.invalid_marker_flag;
+                goal_handle->publish_feedback(feedback);
+                if (progress.finished) { finished = true; result->final_error = progress.error; }
+            }
+        }
+        loop_rate.sleep();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        if (tracker_->tool_create_finish(true) == aimooe_core::ReturnCode::OK) {
+            result->success = true; result->message = "Saved!"; goal_handle->succeed(result);
+        } else {
+            result->success = false; result->message = "Failed to save."; goal_handle->abort(result);
+        }
+        current_state_.store(SystemState::TRACKING);
+    }
+}
+
+// =========================================================================================
+// Self Calibration Action Callbacks
+// =========================================================================================
+
+rclcpp_action::GoalResponse AimooeTrackerNode::handle_self_calib_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const aimooe_msgs::action::SelfCalibration::Goal> goal)
+{
+    if (current_state_.load() != SystemState::TRACKING) return rclcpp_action::GoalResponse::REJECT;
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse AimooeTrackerNode::handle_self_calib_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::SelfCalibration>> goal_handle)
+{
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void AimooeTrackerNode::handle_self_calib_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::SelfCalibration>> goal_handle)
+{
+    std::thread{std::bind(&AimooeTrackerNode::execute_self_calib_action, this, std::placeholders::_1), goal_handle}.detach();
+}
+
+void AimooeTrackerNode::execute_self_calib_action(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::SelfCalibration>> goal_handle)
+{
+    const auto goal = goal_handle->get_goal();
+    auto feedback = std::make_shared<aimooe_msgs::action::SelfCalibration::Feedback>();
+    auto result = std::make_shared<aimooe_msgs::action::SelfCalibration::Result>();
+
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        current_state_.store(SystemState::SELF_CALIBRATING);
+        auto [code, count] = tracker_->tool_self_calibration_init(goal->tool_name);
+        if (code != aimooe_core::ReturnCode::OK) {
+            result->success = false; result->message = "Failed to init self calibration.";
+            goal_handle->abort(result); current_state_.store(SystemState::TRACKING); return;
+        }
+    }
+
+    rclcpp::Rate loop_rate(25); bool finished = false;
+    while (rclcpp::ok() && !finished) {
+        if (goal_handle->is_canceling()) {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            tracker_->tool_self_calibration_finish(false);
+            result->success = false; result->message = "Canceled.";
+            goal_handle->canceled(result); current_state_.store(SystemState::TRACKING); return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            auto [code, progress] = tracker_->tool_self_calibration_process();
+            if (code == aimooe_core::ReturnCode::OK) {
+                feedback->total_marker_count = progress.total_marker_count;
+                feedback->valid_calibration_count = progress.valid_calibration_count;
+                feedback->current_match_error = progress.match_error;
+                goal_handle->publish_feedback(feedback);
+                if (progress.finished) { finished = true; result->final_match_error = progress.match_error; }
+            }
+        }
+        loop_rate.sleep();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        if (tracker_->tool_self_calibration_finish(true) == aimooe_core::ReturnCode::OK) {
+            result->success = true; result->message = "Saved!"; goal_handle->succeed(result);
+        } else {
+            result->success = false; result->message = "Failed to save."; goal_handle->abort(result);
+        }
+        current_state_.store(SystemState::TRACKING);
+    }
+}
+
+// =========================================================================================
+// Tip Calibration Action Callbacks
+// =========================================================================================
+
+rclcpp_action::GoalResponse AimooeTrackerNode::handle_tip_calib_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const aimooe_msgs::action::TipCalibration::Goal> goal)
+{
+    if (current_state_.load() != SystemState::TRACKING) return rclcpp_action::GoalResponse::REJECT;
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse AimooeTrackerNode::handle_tip_calib_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::TipCalibration>> goal_handle)
+{
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void AimooeTrackerNode::handle_tip_calib_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::TipCalibration>> goal_handle)
+{
+    std::thread{std::bind(&AimooeTrackerNode::execute_tip_calib_action, this, std::placeholders::_1), goal_handle}.detach();
+}
+
+void AimooeTrackerNode::execute_tip_calib_action(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::TipCalibration>> goal_handle)
+{
+    const auto goal = goal_handle->get_goal();
+    auto feedback = std::make_shared<aimooe_msgs::action::TipCalibration::Feedback>();
+    auto result = std::make_shared<aimooe_msgs::action::TipCalibration::Result>();
+
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        current_state_.store(SystemState::TIP_CALIBRATING);
+        if (tracker_->tool_tip_calibration_init(goal->calibration_board_name, goal->tool_name) != aimooe_core::ReturnCode::OK) {
+            result->success = false; result->message = "Failed to init tip calibration.";
+            goal_handle->abort(result); current_state_.store(SystemState::TRACKING); return;
+        }
+    }
+
+    rclcpp::Rate loop_rate(25); bool finished = false;
+    while (rclcpp::ok() && !finished) {
+        if (goal_handle->is_canceling()) {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            tracker_->tool_tip_calibration_finish(false);
+            result->success = false; result->message = "Canceled.";
+            goal_handle->canceled(result); current_state_.store(SystemState::TRACKING); return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            auto [code, progress] = tracker_->tool_tip_calibration_process();
+            if (code == aimooe_core::ReturnCode::OK) {
+                feedback->progress_rate = progress.progress_rate;
+                feedback->calibration_error = progress.calibration_error;
+                feedback->rms_error = progress.rms_error;
+                feedback->board_found = progress.board_found;
+                feedback->tool_found = progress.tool_found;
+                feedback->valid_calibration = progress.valid_calibration;
+                goal_handle->publish_feedback(feedback);
+                
+                if (progress.finished) { 
+                    finished = true; 
+                    result->final_calibration_error = progress.calibration_error;
+                    result->final_rms_error = progress.rms_error;
+                }
+            }
+        }
+        loop_rate.sleep();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        if (tracker_->tool_tip_calibration_finish(true) == aimooe_core::ReturnCode::OK) {
+            result->success = true; result->message = "Saved!"; goal_handle->succeed(result);
+        } else {
+            result->success = false; result->message = "Failed to save."; goal_handle->abort(result);
+        }
+        current_state_.store(SystemState::TRACKING);
+    }
 }
 
 // =========================================================================================
