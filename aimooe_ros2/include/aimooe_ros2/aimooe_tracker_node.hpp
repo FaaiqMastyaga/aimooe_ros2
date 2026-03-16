@@ -25,6 +25,8 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <csignal>
+#include <cstdlib>
 
 namespace aimooe_ros2
 {
@@ -73,6 +75,7 @@ private:
     
     // Parameters
     std::string tracking_frame_;
+    std::string camera_ip_;
     std::vector<std::string> tools_to_track_;
     int min_match_points_;
 

@@ -6,16 +6,26 @@ using namespace std::chrono_literals;
 namespace aimooe_ros2
 {
 
+// Helper
+bool is_camera_reachable(const std::string& ip_address) {
+    // Ping the camera exactly 1 time (-c 1) with a strict 1-second timeout (-W 1)
+    std::string command = "ping -c 1 -W 1 " + ip_address + " > /dev/null 2>&1";
+    int result = std::system(command.c_str());
+    return (result == 0);
+}
+
 AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
 : Node("aimooe_tracker_node", options)
 {
     // --- Declare Parameters ---
     this->declare_parameter<std::string>("tracking_frame", "aimooe_camera_link");
+    this->declare_parameter<std::string>("camera_ip", "192.168.31.10");
     this->declare_parameter<std::vector<std::string>>("tools_to_track", {"tool", "cal", "drb", "ict"});
     this->declare_parameter<int>("min_match_points", 3);
 
     // --- Get Parameters ---
     tracking_frame_ = this->get_parameter("tracking_frame").as_string();
+    camera_ip_ = this->get_parameter("camera_ip").as_string();
     tools_to_track_ = this->get_parameter("tools_to_track").as_string_array();
     min_match_points_ = this->get_parameter("min_match_points").as_int();
 
@@ -43,13 +53,8 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
 
     // --- Initialize Tracker ---
     tracker_ = std::make_unique<aimooe_core::AimooeTracker>();
-    if (!initialize_tracker()) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to initialize Aimooe Tracker. Shutting down node.");
-        throw std::runtime_error("Hardware initialization failed.");
-    }
-    else {
-        current_state_.store(SystemState::TRACKING);
-    }
+    current_state_.store(SystemState::CONNECTING);
+    last_reconnect_time_ = this->now() - rclcpp::Duration(5, 0); // Force immediate connection attempt
 
     // --- Start Dedicated Hardware Thread ---
     running_.store(true);
@@ -125,12 +130,13 @@ void AimooeTrackerNode::tracking_loop() {
                 case SystemState::CONNECTING: {
                     if ((this->now() - last_reconnect_time_).seconds() > 2.0) {
                         last_reconnect_time_ = this->now();
+                        if (!is_camera_reachable(camera_ip_)) {
+                            RCLCPP_WARN(this->get_logger(), "Network unreachable. Waiting for cable...");
+                            break;
+                        }
                         if (initialize_tracker()) {
                             RCLCPP_INFO(this->get_logger(), "Camera Reconnected!");
                             current_state_.store(SystemState::TRACKING);
-                        }
-                        else {
-                            RCLCPP_WARN(this->get_logger(), "Connection failed. Retrying in 2 seconds...");
                         }
                     }
                     break;
@@ -141,6 +147,7 @@ void AimooeTrackerNode::tracking_loop() {
 
                     if (code != aimooe_core::ReturnCode::OK) {
                         RCLCPP_WARN(this->get_logger(), "Tracker error. Attempting to reconnect...");
+                        tracker_->disconnect();
                         current_state_.store(SystemState::CONNECTING);
                         last_reconnect_time_ = this->now();
                         break;
@@ -349,6 +356,9 @@ void AimooeTrackerNode::handle_cancel_pivot_calib(const std::shared_ptr<std_srvs
 // Standard main function
 int main(int argc, char ** argv)
 {
+    // Ignore broken pipe signals so cable unplugs don't crash the node
+    signal(SIGPIPE, SIG_IGN);
+
     rclcpp::init(argc, argv);
     auto node = std::make_shared<aimooe_ros2::AimooeTrackerNode>();
 
