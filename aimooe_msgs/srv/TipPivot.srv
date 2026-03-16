@@ -1,5 +1,0 @@
-string tool_name
-bool clear_tip_mid
----
-bool success
-string message

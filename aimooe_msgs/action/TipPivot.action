@@ -1,0 +1,13 @@
+# --- GOAL ---
+string tool_name
+bool clear_tip_mid
+---
+# --- RESULT ---
+bool success
+string message
+float32 final_mean_error
+---
+# --- FEEDBACK ---
+float32 progress_rate
+float32 current_mean_error
+bool tool_found

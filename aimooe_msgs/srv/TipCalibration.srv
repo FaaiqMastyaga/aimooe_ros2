@@ -1,5 +1,0 @@
-string calibration_board_name
-string tool_name
----
-bool success
-string message

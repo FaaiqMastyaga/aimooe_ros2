@@ -22,13 +22,17 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  # Message files
   "msg/Tool.msg"
   "msg/ToolArray.msg"
-  "srv/ToolCreation.srv"
-  "srv/SelfCalibration.srv"
-  "srv/TipCalibration.srv"
-  "srv/TipPivot.srv"
-  DEPENDENCIES geometry_msgs
+
+  # Action files 
+  "action/ToolCreation.action"
+  "action/SelfCalibration.action"
+  "action/TipCalibration.action"
+  "action/TipPivot.action"
+
+  DEPENDENCIES geometry_msgs action_msgs
  )
 
 if(BUILD_TESTING)

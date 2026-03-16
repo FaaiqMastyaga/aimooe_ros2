@@ -1,0 +1,17 @@
+# --- GOAL ---
+string calibration_board_name
+string tool_name
+---
+# --- RESULT ---
+bool success
+string message
+float32 final_calibration_error
+float32 final_rms_error
+---
+# --- FEEDBACK ---
+float32 progress_rate
+float32 calibration_error
+float32 rms_error
+bool board_found
+bool tool_found
+bool valid_calibration

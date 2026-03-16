@@ -1,5 +1,0 @@
-int16 marker_count
-string tool_name
----
-bool success
-string message
