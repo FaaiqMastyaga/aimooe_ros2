@@ -20,12 +20,14 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     // --- Declare Parameters ---
     this->declare_parameter<std::string>("tracking_frame", "aimooe_camera_link");
     this->declare_parameter<std::string>("camera_ip", "192.168.31.10");
+    this->declare_parameter<std::string>("tools_dir", "");
     this->declare_parameter<std::vector<std::string>>("tools_to_track", {"tool", "cal", "drb", "ict"});
     this->declare_parameter<int>("min_match_points", 3);
 
     // --- Get Parameters ---
     tracking_frame_ = this->get_parameter("tracking_frame").as_string();
     camera_ip_ = this->get_parameter("camera_ip").as_string();
+    tools_dir_ = this->get_parameter("tools_dir").as_string();
     tools_to_track_ = this->get_parameter("tools_to_track").as_string_array();
     min_match_points_ = this->get_parameter("min_match_points").as_int();
 
@@ -39,17 +41,14 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
     srv_connect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/connect", std::bind(&AimooeTrackerNode::handle_connect, this, std::placeholders::_1, std::placeholders::_2));
     srv_disconnect_ = this->create_service<std_srvs::srv::Trigger>("aimooe/disconnect", std::bind(&AimooeTrackerNode::handle_disconnect, this, std::placeholders::_1, std::placeholders::_2));
 
-    srv_start_tool_create_ = this->create_service<aimooe_msgs::srv::ToolCreation>("aimooe/start_tool_create", std::bind(&AimooeTrackerNode::handle_start_tool_create, this, std::placeholders::_1, std::placeholders::_2));
-    srv_cancel_tool_create_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_tool_create", std::bind(&AimooeTrackerNode::handle_cancel_tool_create, this, std::placeholders::_1, std::placeholders::_2));
-
-    srv_start_self_calib_ = this->create_service<aimooe_msgs::srv::SelfCalibration>("aimooe/start_self_calib", std::bind(&AimooeTrackerNode::handle_start_self_calib, this, std::placeholders::_1, std::placeholders::_2));
-    srv_cancel_self_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_self_calib", std::bind(&AimooeTrackerNode::handle_cancel_self_calib, this, std::placeholders::_1, std::placeholders::_2));
-
-    srv_start_tip_calib_ = this->create_service<aimooe_msgs::srv::TipCalibration>("aimooe/start_tip_calib", std::bind(&AimooeTrackerNode::handle_start_tip_calib, this, std::placeholders::_1, std::placeholders::_2));
-    srv_cancel_tip_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_tip_calib", std::bind(&AimooeTrackerNode::handle_cancel_tip_calib, this, std::placeholders::_1, std::placeholders::_2));
-
-    srv_start_pivot_calib_ = this->create_service<aimooe_msgs::srv::TipPivot>("aimooe/start_pivot_calib", std::bind(&AimooeTrackerNode::handle_start_pivot_calib, this, std::placeholders::_1, std::placeholders::_2));
-    srv_cancel_pivot_calib_ = this->create_service<std_srvs::srv::Trigger>("aimooe/cancel_pivot_calib", std::bind(&AimooeTrackerNode::handle_cancel_pivot_calib, this, std::placeholders::_1, std::placeholders::_2));
+    // --- Initialize Action Servers ---
+    action_tip_pivot_ = rclcpp_action::create_server<aimooe_msgs::action::TipPivot>(
+        this,
+        "aimooe/tip_pivot",
+        std::bind(&AimooeTrackerNode::handle_tip_pivot_goal, this, std::placeholders::_1, std::placeholders::_2),
+        std::bind(&AimooeTrackerNode::handle_tip_pivot_cancel, this, std::placeholders::_1),
+        std::bind(&AimooeTrackerNode::handle_tip_pivot_accepted, this, std::placeholders::_1)
+    );
 
     // --- Initialize Tracker ---
     tracker_ = std::make_unique<aimooe_core::AimooeTracker>();
@@ -90,16 +89,21 @@ bool AimooeTrackerNode::initialize_tracker()
 
     tracker_->set_acquired_data(aimooe_core::AcquiredDataType::NONE);
 
-    // Dynamically locate the tools folder inside the ROS 2 install space
-    std::string package_share_dir;
-    try {
-        package_share_dir = ament_index_cpp::get_package_share_directory("aimooe_ros2");
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(this->get_logger(), "Could not find package share directory: %s", e.what());
-        return false;
+    // Check if the user provided a hardcoded path via parameters
+    std::string tools_path = tools_dir_;
+
+    // If not, fallback to the ROS 2 install space (Read-Only Warning!)
+    if (tools_path.empty()) {
+        try {
+            std::string package_share_dir = ament_index_cpp::get_package_share_directory("aimooe_ros2");
+            tools_path = package_share_dir + "/tools";
+            RCLCPP_WARN(this->get_logger(), "Using ROS 2 install space for tools. Calibrations may be overwritten by colcon build!");
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Could not find package share directory: %s", e.what());
+            return false;
+        }
     }
 
-    std::string tools_path = package_share_dir + "/tools";
     if (tracker_->set_tools_path(tools_path)) {
         RCLCPP_INFO(this->get_logger(), "Loaded tool definitions from: %s", tools_path.c_str());
     } else {
@@ -228,22 +232,6 @@ void AimooeTrackerNode::tracking_loop() {
                     break;
                 }
 
-                case SystemState::TOOL_CREATING: {
-                    break;
-                }
-                
-                case SystemState::SELF_CALIBRATING: {
-                    break;
-                }
-                
-                case SystemState::TIP_CALIBRATING: {
-                    break;
-                }
-                
-                case SystemState::PIVOT_CALIBRATING: {
-                    break;
-                } 
-                
                 default:
                     break;
             }
@@ -311,44 +299,113 @@ void AimooeTrackerNode::handle_disconnect(const std::shared_ptr<std_srvs::srv::T
     response->message = "Camera disconnected successfully.";
 }
 
-void AimooeTrackerNode::handle_start_tool_create(const std::shared_ptr<aimooe_msgs::srv::ToolCreation::Request> request, std::shared_ptr<aimooe_msgs::srv::ToolCreation::Response> response)
-{
+// =========================================================================================
+// Tip Pivot Action Callbacks
+// =========================================================================================
 
+rclcpp_action::GoalResponse AimooeTrackerNode::handle_tip_pivot_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const aimooe_msgs::action::TipPivot::Goal> goal)
+{
+    RCLCPP_INFO(this->get_logger(), "Received goal request for Tip Pivot on tool: %s", goal->tool_name.c_str());
+
+    // Safety: Only allow calibration to start if the camera is actively tracking
+    if (current_state_.load() != SystemState::TRACKING) {
+        RCLCPP_WARN(this->get_logger(), "Rejected Tip Pivot: Camera is not in TRACKING state.");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
-void AimooeTrackerNode::handle_cancel_tool_create(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+rclcpp_action::CancelResponse AimooeTrackerNode::handle_tip_pivot_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::TipPivot>> goal_handle)
 {
-
+    RCLCPP_INFO(this->get_logger(), "Received request to cancel Tip Pivot. Aborting safely...");
+    return rclcpp_action::CancelResponse::ACCEPT;
 }
 
-void AimooeTrackerNode::handle_start_self_calib(const std::shared_ptr<aimooe_msgs::srv::SelfCalibration::Request> request, std::shared_ptr<aimooe_msgs::srv::SelfCalibration::Response> response)
+void AimooeTrackerNode::handle_tip_pivot_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::TipPivot>> goal_handle)
 {
-
+    // Spawn a dedicated thread for the calibration loop so we don't freeze the ROS executor
+    std::thread{std::bind(&AimooeTrackerNode::execute_tip_pivot_action, this, std::placeholders::_1), goal_handle}.detach();
 }
 
-void AimooeTrackerNode::handle_cancel_self_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+void AimooeTrackerNode::execute_tip_pivot_action(const std::shared_ptr<rclcpp_action::ServerGoalHandle<aimooe_msgs::action::TipPivot>> goal_handle)
 {
+    const auto goal = goal_handle->get_goal();
+    auto feedback = std::make_shared<aimooe_msgs::action::TipPivot::Feedback>();
+    auto result = std::make_shared<aimooe_msgs::action::TipPivot::Result>();
 
-}
+    // 1. Initialize the calibration in the SDK
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        current_state_.store(SystemState::PIVOT_CALIBRATING); // Pause normal TF tracking
+        
+        auto init_code = tracker_->tool_tip_pivot_init(goal->tool_name, goal->clear_tip_mid);
+        if (init_code != aimooe_core::ReturnCode::OK) {
+            result->success = false;
+            result->message = "Failed to initialize pivot calibration in SDK.";
+            goal_handle->abort(result);
+            current_state_.store(SystemState::TRACKING); // Resume TF tracking
+            return;
+        }
+    }
 
-void AimooeTrackerNode::handle_start_tip_calib(const std::shared_ptr<aimooe_msgs::srv::TipCalibration::Request> request, std::shared_ptr<aimooe_msgs::srv::TipCalibration::Response> response)
-{
+    // 2. The Feedback Loop (running at 25 Hz)
+    rclcpp::Rate loop_rate(25); 
+    bool finished = false;
 
-}
+    while (rclcpp::ok() && !finished) {
+        
+        // Did the Slicer UI click "Cancel"?
+        if (goal_handle->is_canceling()) {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            tracker_->tool_tip_pivot_finish(false); // false = discard data
+            result->success = false;
+            result->message = "Calibration canceled by Slicer.";
+            goal_handle->canceled(result);
+            current_state_.store(SystemState::TRACKING); 
+            return;
+        }
 
-void AimooeTrackerNode::handle_cancel_tip_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
+        // Process one frame of calibration data
+        {
+            std::lock_guard<std::mutex> lock(api_mutex_);
+            auto [code, progress] = tracker_->tool_tip_pivot_process();
 
-}
+            if (code == aimooe_core::ReturnCode::OK) {
+                // Populate the Feedback message and blast it to Slicer
+                feedback->progress_rate = progress.progress_rate;
+                feedback->current_mean_error = progress.mean_error;
+                feedback->tool_found = progress.tool_found;
+                goal_handle->publish_feedback(feedback);
 
-void AimooeTrackerNode::handle_start_pivot_calib(const std::shared_ptr<aimooe_msgs::srv::TipPivot::Request> request, std::shared_ptr<aimooe_msgs::srv::TipPivot::Response> response)
-{
+                if (progress.finished) {
+                    finished = true;
+                    result->final_mean_error = progress.mean_error;
+                }
+            } else if (code != aimooe_core::ReturnCode::STALE_DATA) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Hardware error during pivot process.");
+            }
+        }
+        loop_rate.sleep();
+    }
 
-}
-
-void AimooeTrackerNode::handle_cancel_pivot_calib(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
-    
+    // 3. Save the File and Finish
+    {
+        std::lock_guard<std::mutex> lock(api_mutex_);
+        auto save_code = tracker_->tool_tip_pivot_finish(true); // true = save to .rom file
+        
+        if (save_code == aimooe_core::ReturnCode::OK) {
+            result->success = true;
+            result->message = "Pivot calibration completed and saved successfully!";
+            goal_handle->succeed(result);
+            RCLCPP_INFO(this->get_logger(), "Pivot success! Final Error: %f", result->final_mean_error);
+        } else {
+            result->success = false;
+            result->message = "Calibration finished but failed to save to disk.";
+            goal_handle->abort(result);
+        }
+        
+        current_state_.store(SystemState::TRACKING); // Resume normal Slicer tracking!
+    }
 }
 
 } // namespace aimooe_ros2
