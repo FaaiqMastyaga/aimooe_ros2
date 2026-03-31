@@ -19,6 +19,7 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
 {
     // --- Declare Parameters ---
     this->declare_parameter<std::string>("tracking_frame", "aimooe_camera_link");
+    this->declare_parameter<std::string>("connection_type", "");
     this->declare_parameter<std::string>("camera_ip", "");
     this->declare_parameter<std::string>("tools_dir", "");
     this->declare_parameter<std::vector<std::string>>("tools_to_track", std::vector<std::string>());
@@ -26,6 +27,7 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
 
     // --- Get Parameters ---
     tracking_frame_ = this->get_parameter("tracking_frame").as_string();
+    connection_type_ = this->get_parameter("connection_type").as_string();
     camera_ip_ = this->get_parameter("camera_ip").as_string();
     tools_dir_ = this->get_parameter("tools_dir").as_string();
     tools_to_track_ = this->get_parameter("tools_to_track").as_string_array();
@@ -100,8 +102,22 @@ AimooeTrackerNode::~AimooeTrackerNode()
 
 bool AimooeTrackerNode::initialize_tracker()
 {
-    RCLCPP_INFO(this->get_logger(), "Connecting to Aimooe device...");
-    auto connect_code = tracker_->connect(aimooe_core::ConnectionInterface::ETHERNET);
+    RCLCPP_INFO(this->get_logger(), "Connecting to Aimooe device via %s...", connection_type_.c_str());
+
+    // Choose the connection interface based on the parameter
+    aimooe_core::ConnectionInterface conn_interface;
+    if (connection_type_ == "ETHERNET") {
+        conn_interface = aimooe_core::ConnectionInterface::ETHERNET;
+    }
+    else if (connection_type_ == "USB") {
+        conn_interface = aimooe_core::ConnectionInterface::USB;
+    }
+    else {
+        RCLCPP_ERROR(this->get_logger(), "Invalid connection type specified: %s. Use 'ETHERNET' or 'USB'.", connection_type_.c_str());
+        return false;
+    }
+
+    auto connect_code = tracker_->connect(conn_interface);
     
     if (connect_code != aimooe_core::ReturnCode::OK) {
         RCLCPP_ERROR(this->get_logger(), "Connection failed.");
@@ -175,10 +191,15 @@ void AimooeTrackerNode::tracking_loop() {
                 case SystemState::CONNECTING: {
                     if ((this->now() - last_reconnect_time_).seconds() > 2.0) {
                         last_reconnect_time_ = this->now();
-                        if (!is_camera_reachable(camera_ip_)) {
-                            RCLCPP_WARN(this->get_logger(), "Network unreachable. Waiting for cable...");
-                            break;
+
+                        // Only use the ping guard if we're trying to connect over Ethernet. USB connections don't have an IP to ping and will fail this check.
+                        if (connection_type_ == "ETHERNET") {
+                            if (!is_camera_reachable(camera_ip_)) {
+                                RCLCPP_WARN(this->get_logger(), "Network unreachable. Waiting for cable...");
+                                break;
+                            }
                         }
+                        
                         if (initialize_tracker()) {
                             RCLCPP_INFO(this->get_logger(), "Camera Reconnected!");
                             current_state_.store(SystemState::TRACKING);
