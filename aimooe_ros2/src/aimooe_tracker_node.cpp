@@ -19,9 +19,9 @@ AimooeTrackerNode::AimooeTrackerNode(const rclcpp::NodeOptions & options)
 {
     // --- Declare Parameters ---
     this->declare_parameter<std::string>("tracking_frame", "aimooe_camera_link");
-    this->declare_parameter<std::string>("camera_ip", "192.168.31.10");
+    this->declare_parameter<std::string>("camera_ip", "");
     this->declare_parameter<std::string>("tools_dir", "");
-    this->declare_parameter<std::vector<std::string>>("tools_to_track", {"tool", "cal", "drb", "ict"});
+    this->declare_parameter<std::vector<std::string>>("tools_to_track", std::vector<std::string>());
     this->declare_parameter<int>("min_match_points", 3);
 
     // --- Get Parameters ---
@@ -130,6 +130,26 @@ bool AimooeTrackerNode::initialize_tracker()
     } else {
         RCLCPP_ERROR(this->get_logger(), "Failed to load tool definitions from: %s", tools_path.c_str());
         return false;
+    }
+
+    // Auto Detect Tools
+    tools_to_track_.clear();
+
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(tools_path)) {
+            if (entry.path().extension() == ".tool") {
+                // Get just the name without extension
+                tools_to_track_.push_back(entry.path().stem().string());
+            }
+        }
+    } 
+    catch (const std::filesystem::filesystem_error& e) {
+        RCLCPP_WARN(this->get_logger(), "Could not scan tools directory for .tool files: %s", e.what());
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Auto-detected %zu tools to track:", tools_to_track_.size());
+    for (const auto& tool_name : tools_to_track_) {
+        RCLCPP_INFO(this->get_logger(), "  - %s", tool_name.c_str());
     }
 
     return true;

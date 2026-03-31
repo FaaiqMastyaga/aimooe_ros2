@@ -28,6 +28,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 
 namespace aimooe_ros2
 {
