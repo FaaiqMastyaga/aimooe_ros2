@@ -137,7 +137,7 @@ bool AimooeTrackerNode::initialize_tracker()
 
     try {
         for (const auto& entry : std::filesystem::directory_iterator(tools_path)) {
-            if (entry.path().extension() == ".tool") {
+            if (entry.path().extension() == ".aimtool") {
                 // Get just the name without extension
                 tools_to_track_.push_back(entry.path().stem().string());
             }
