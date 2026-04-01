@@ -1,6 +1,6 @@
 aimooe_tracker_node:
   ros__parameters:
     camera_ip: "192.168.31.10"
-    tools_dir: "/home/dian/Documents/aimooe_ros2_ws/src/aimooe_ros2/tools"
+    tools_dir: "/home/dian/Documents/aimooe_ros2_ws/src/aimooe_ros2/aimooe_ros2/tools"
     tracking_frame: "aimooe_camera_link"
     min_match_points: 3
