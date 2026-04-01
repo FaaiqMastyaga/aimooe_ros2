@@ -90,6 +90,7 @@ private:
     
     // Parameters
     std::string tracking_frame_;
+    std::string connection_type_;
     std::string camera_ip_;
     std::string tools_dir_;
     std::vector<std::string> tools_to_track_;
