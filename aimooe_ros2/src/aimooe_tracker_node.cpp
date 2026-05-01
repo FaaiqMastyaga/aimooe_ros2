@@ -260,9 +260,9 @@ void AimooeTrackerNode::tracking_loop() {
                         tool_msg.quaternion.w = tool.quaternion[3];
 
                         // Translation Vector (Geometry Vector3)
-                        tool_msg.translation_vector.x = tool.translation_vector[0];
-                        tool_msg.translation_vector.y = tool.translation_vector[1];
-                        tool_msg.translation_vector.z = tool.translation_vector[2];
+                        tool_msg.translation_vector.x = tool.translation_vector[0] / 1000.0;
+                        tool_msg.translation_vector.y = tool.translation_vector[1] / 1000.0;
+                        tool_msg.translation_vector.z = tool.translation_vector[2] / 1000.0;
 
                         // Origin Coordinates (Geometry Point32)
                         tool_msg.origin_coordinates.x = tool.origin_coordinates[0];
