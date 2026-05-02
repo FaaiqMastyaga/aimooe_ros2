@@ -245,8 +245,8 @@ void AimooeTrackerNode::tracking_loop() {
                         tool_msg.tool_name = tool.tool_name;
                         tool_msg.tool_type = static_cast<int16_t>(tool.tool_type);
                         tool_msg.is_valid = tool.is_valid;
-                        tool_msg.mean_abs_error = tool.mean_abs_error;
-                        tool_msg.rms_error = tool.rms_error;
+                        tool_msg.mean_abs_error = tool.mean_abs_error / 1000.0;
+                        tool_msg.rms_error = tool.rms_error / 1000.0;
 
                         // Rotation Vector (Geometry Vector3)
                         tool_msg.rotation_vector.x = tool.rotation_vector[0];
@@ -265,9 +265,9 @@ void AimooeTrackerNode::tracking_loop() {
                         tool_msg.translation_vector.z = tool.translation_vector[2] / 1000.0;
 
                         // Origin Coordinates (Geometry Point32)
-                        tool_msg.origin_coordinates.x = tool.origin_coordinates[0];
-                        tool_msg.origin_coordinates.y = tool.origin_coordinates[1];
-                        tool_msg.origin_coordinates.z = tool.origin_coordinates[2];
+                        tool_msg.origin_coordinates.x = tool.origin_coordinates[0] / 1000.0;
+                        tool_msg.origin_coordinates.y = tool.origin_coordinates[1] / 1000.0;
+                        tool_msg.origin_coordinates.z = tool.origin_coordinates[2] / 1000.0;
 
                         // Rotation Matrix (Flattened 3x3 Matrix)
                         for (int i = 0; i < 3; i++) {
@@ -280,9 +280,9 @@ void AimooeTrackerNode::tracking_loop() {
                         for (size_t i = 0; i < tool.marker_points.size(); i += 3) {
                             if (i + 2 < tool.marker_points.size()) {
                                 geometry_msgs::msg::Point32 pt;
-                                pt.x = tool.marker_points[i];
-                                pt.y = tool.marker_points[i+1];
-                                pt.z = tool.marker_points[i+2];
+                                pt.x = tool.marker_points[i] / 1000.0;
+                                pt.y = tool.marker_points[i+1] / 1000.0;
+                                pt.z = tool.marker_points[i+2] / 1000.0;
                                 tool_msg.marker_points.push_back(pt);
                             }
                         }
